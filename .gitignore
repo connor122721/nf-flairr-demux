@@ -1,0 +1,53 @@
+# Nextflow
+work*/
+.nextflow*
+.nextflow.log*
+*.nextflow.log*
+trace-*.txt
+report-*.html
+timeline-*.html
+dag-*.html
+pipeline_info/
+*pdf
+*png
+
+# Pipeline outputs
+output*/
+demux_out*/
+results/
+
+# Singularity / Apptainer
+*.sif
+*.img
+singularity_cache/
+apptainer_cache/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.venv/
+venv/
+.ipynb_checkpoints/
+
+# R
+.Rhistory
+.RData
+.Rproj.user/
+*.Rproj
+
+# Editors / OS
+.vscode/
+.idea/
+*.swp
+*~
+.DS_Store
+Thumbs.db
+
+# Logs / scratch
+*.log
+slurm-*.out
+scratch/
+tmp/
+.claude/

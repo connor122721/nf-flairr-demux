@@ -1,0 +1,31 @@
+Bootstrap: docker
+From: condaforge/mambaforge:latest
+
+%labels
+    Author Connor Murray
+    Description Combined container for nf-flairr-demux: pbskera, lima, pysam, pigz, biopython, receptor_utils
+    Pipeline nf-flairr-demux (main_v1.nf consolidated)
+
+%post
+    mamba install -y -c bioconda -c conda-forge \
+        pbskera \
+        lima \
+        python=3.12 \
+        pysam \
+        numpy \
+        biopython \
+        pigz \
+        pip \
+        && mamba clean -afy
+    # receptor_utils is PyPI-only — needed by bin/filter_shared_umis.py
+    pip install --no-cache-dir receptor-utils
+
+%test
+    set -e
+    skera --version
+    lima --version
+    pigz --version
+    python -c "import pysam, numpy, Bio; from receptor_utils import simple_bio_seq; print('pysam:', pysam.__version__); print('biopython:', Bio.__version__); print('receptor_utils: OK')"
+
+%runscript
+    exec "$@"
