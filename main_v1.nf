@@ -2,12 +2,25 @@
 nextflow.enable.dsl = 2
 
 // ============================================================================
-// nf-flairr-demux: Kinnex FLAIRR-seq parameter sweep
+// nf-flairr-demux: FLAIRR-seq parameter sweep (Kinnex or standard HiFi)
 // ============================================================================
+// Input, either:
+//   --samplesheet sheet.csv   CSV with columns bam,sample_name,sample_barcode
+//                             (extra columns are ignored). Each BAM gets its own
+//                             barcode->sample map, so barcodes can be reused
+//                             across BAMs.
+// or (legacy):
+//   --input_bams <dir|bam> --biosample <SampleName,BarcodeName csv>
+//                             one barcode->sample map shared by every BAM.
+//
+// --kinnex true  (default) run skera split (needs --mas_primers) before demux
+// --kinnex false            standard (non-Kinnex) HiFi reads: demux directly
+params.samplesheet = null
 params.input_bams = null
 params.mas_primers = null
 params.barcodes = null
 params.biosample = null
+params.kinnex = true
 params.outdir = 'results'
 params.no_trim = false
 params.cpus = 12
@@ -32,49 +45,59 @@ params.filter_multiple_thresh = 10
 // ============================================================================
 // Validate
 // ============================================================================
-if (!params.input_bams)  { error "ERROR: --input_bams is required" }
-if (!params.mas_primers) { error "ERROR: --mas_primers is required" }
-if (!params.barcodes)    { error "ERROR: --barcodes is required" }
-if (!params.biosample)   { error "ERROR: --biosample is required" }
+def is_kinnex = params.kinnex.toString().toLowerCase() in ['true', 'yes', '1']
+
+if (params.samplesheet && (params.input_bams || params.biosample)) {
+    error "ERROR: use either --samplesheet OR --input_bams/--biosample, not both"
+}
+if (!params.samplesheet && !(params.input_bams && params.biosample)) {
+    error "ERROR: provide --samplesheet, or both --input_bams and --biosample"
+}
+if (is_kinnex && !params.mas_primers) { error "ERROR: --mas_primers is required when --kinnex true" }
+if (!params.barcodes) { error "ERROR: --barcodes is required" }
+
+// BAM id used in output names: file name minus .bam (e.g. movie_s1.hifi_reads)
+def bamId(f) { f.name.replaceAll(/\.bam$/, '') }
+
+log.info "nf-flairr-demux | kinnex: ${is_kinnex} | input: ${params.samplesheet ?: params.input_bams}"
 
 // ============================================================================
 // Processes
 // ============================================================================
 process SKERA_SPLIT {
-    tag "${bam.baseName}"
+    tag "${id}"
     label 'process_medium'
     container "${params.demux_container}"
 
-    publishDir "${params.outdir}/skera", mode: 'copy'
+    publishDir "${params.outdir}/skera", mode: 'copy', pattern: '*.skera.bam*'
 
     input:
-    path bam
+    tuple val(id), path(bam), path(biosample)
     path mas_primers
 
     output:
-    path "${bam.baseName}.skera.bam", emit: skera_bam
-    path "${bam.baseName}.skera.bam.pbi", emit: skera_pbi, optional: true
+    tuple val(id), path("${id}.skera.bam"), path(biosample), emit: skera_bam
+    path "${id}.skera.bam.pbi", emit: skera_pbi, optional: true
 
     script:
     """
     skera split \\
         ${bam} \\
         ${mas_primers} \\
-        ${bam.baseName}.skera.bam
+        ${id}.skera.bam
     """
 }
 
 process SIMPLE_DEMUX {
-    tag "${skera_bam.baseName}_mm${mismatches}_bc${max_bc_dist}"
+    tag "${id}_mm${mismatches}_bc${max_bc_dist}"
     label 'process_medium'
     container "${params.demux_container}"
 
-    publishDir "${params.outdir}/demux/mm${mismatches}_bc${max_bc_dist}/${skera_bam.baseName}", mode: 'copy'
+    publishDir "${params.outdir}/demux/mm${mismatches}_bc${max_bc_dist}/${id}", mode: 'copy'
 
     input:
-    tuple path(skera_bam), val(mismatches), val(max_bc_dist)
+    tuple val(id), path(reads_bam), path(biosample), val(mismatches), val(max_bc_dist)
     path barcodes
-    path biosample
 
     output:
     tuple val(mismatches), val(max_bc_dist), path("*.fastq.gz"),            emit: fastqs
@@ -85,11 +108,10 @@ process SIMPLE_DEMUX {
 
     script:
     def trim_flag = params.no_trim ? '--no-trim' : ''
-    def sample_id = skera_bam.baseName
-    def unique_suffix = "_${sample_id}_mm${mismatches}_bc${max_bc_dist}"
+    def unique_suffix = "_${id}_mm${mismatches}_bc${max_bc_dist}"
     """
     python ${projectDir}/bin/simple_demux.py \\
-        --input ${skera_bam} \\
+        --input ${reads_bam} \\
         --barcodes ${barcodes} \\
         --biosample ${biosample} \\
         --mismatches ${mismatches} \\
@@ -248,18 +270,67 @@ workflow {
     //            .filter { it.exists() }
     //            .unique()
     
-    def bam_input = params.input_bams
-    ch_bams = file(bam_input).isDirectory()
-    	? Channel.fromPath("${bam_input}/**/*.bam", checkIfExists: false)
-    	: Channel.fromPath(bam_input, checkIfExists: false)
-    ch_bams = ch_bams.unique()
+    ch_barcodes = Channel.fromPath(params.barcodes, checkIfExists: true).first()
 
-    ch_mas_primers = Channel.fromPath(params.mas_primers, checkIfExists: true).first()
-    ch_barcodes    = Channel.fromPath(params.barcodes, checkIfExists: true).first()
-    ch_biosample   = Channel.fromPath(params.biosample, checkIfExists: true).first()
+    // ch_inputs: tuple(id, bam, per-BAM biosample csv)
+    // ch_biosample: one CSV for SWEEP_SUMMARY (3rd column Bam = id in samplesheet mode)
+    if (params.samplesheet) {
+        def sheet = file(params.samplesheet, checkIfExists: true)
+        def rows  = sheet.splitCsv(header: true).collect { r ->
+            r.collectEntries { k, v -> [(k?.trim()): v?.trim()] }
+        }
+        ['bam', 'sample_name', 'sample_barcode'].each { c ->
+            if (!rows || !rows[0].containsKey(c)) {
+                error "ERROR: samplesheet ${sheet} is missing column '${c}' (needs bam,sample_name,sample_barcode)"
+            }
+        }
+        rows = rows.findAll { it.bam }
 
-    // Step 1: Deconcatenate (once per BAM)
-    SKERA_SPLIT(ch_bams, ch_mas_primers)
+        def bs_dir = file("${workflow.workDir}/biosample_sheets")
+        bs_dir.mkdirs()
+        def inputs = []
+        def combined = ['SampleName,BarcodeName,Bam']
+        rows.groupBy { it.bam }.each { bam_path, rs ->
+            def bam = file(bam_path, checkIfExists: true)
+            def id  = bamId(bam)
+            def map = [:]
+            rs.each { r ->
+                if (map.containsKey(r.sample_barcode) && map[r.sample_barcode] != r.sample_name) {
+                    error "ERROR: ${r.sample_barcode} maps to both '${map[r.sample_barcode]}' and '${r.sample_name}' in ${bam_path}"
+                }
+                map[r.sample_barcode] = r.sample_name
+            }
+            def bs = bs_dir.resolve("${id}.biosample.csv")
+            bs.text = (['SampleName,BarcodeName'] + map.collect { bc, s -> "${s},${bc}" }).join('\n') + '\n'
+            map.each { bc, s -> combined << "${s},${bc},${id}" }
+            inputs << tuple(id, bam, bs)
+            log.info "  ${id}: ${map.size()} samples"
+        }
+        def ids = inputs.collect { it[0] }
+        if (ids.size() != ids.unique(false).size()) {
+            error "ERROR: two BAMs in the samplesheet share the same file name: ${ids}"
+        }
+        def all_bs = bs_dir.resolve('all_samples.biosample.csv')
+        all_bs.text = combined.join('\n') + '\n'
+
+        ch_inputs    = Channel.fromList(inputs)
+        ch_biosample = Channel.value(all_bs)
+    } else {
+        def bam_input = params.input_bams
+        def bam_glob = file(bam_input).isDirectory() ? "${bam_input}/**/*.bam" : bam_input
+        ch_bams = Channel.fromPath(bam_glob, checkIfExists: false)
+        ch_biosample = Channel.fromPath(params.biosample, checkIfExists: true).first()
+        ch_inputs    = ch_bams.unique().combine(ch_biosample).map { bam, bs -> tuple(bamId(bam), bam, bs) }
+    }
+
+    // Step 1: Deconcatenate Kinnex arrays (once per BAM), or use HiFi reads as-is
+    if (is_kinnex) {
+        ch_mas_primers = Channel.fromPath(params.mas_primers, checkIfExists: true).first()
+        SKERA_SPLIT(ch_inputs, ch_mas_primers)
+        ch_reads = SKERA_SPLIT.out.skera_bam
+    } else {
+        ch_reads = ch_inputs
+    }
 
     // Step 2: Build parameter sweep grid.
     // Dedupe at the Groovy list level so a CLI like `--max_bc_dist_range 0,0`
@@ -270,14 +341,14 @@ workflow {
     ch_mismatches  = Channel.from(params.mismatches_range .tokenize(',').collect { it.trim().toInteger() }.unique())
     ch_max_bc_dist = Channel.from(params.max_bc_dist_range.tokenize(',').collect { it.trim().toInteger() }.unique())
 
-    // Combine: every skera BAM × every (mismatches, max_bc_dist) pair
-    ch_sweep = SKERA_SPLIT.out.skera_bam
+    // Combine: every input BAM × every (mismatches, max_bc_dist) pair
+    ch_sweep = ch_reads
         .combine(ch_mismatches)
         .combine(ch_max_bc_dist)
-        .map { bam, mm, bcd -> tuple(bam, mm, bcd) }
+        .map { id, bam, bs, mm, bcd -> tuple(id, bam, bs, mm, bcd) }
 
     // Step 3: Demux for each parameter combo (also produces read length reports)
-    SIMPLE_DEMUX(ch_sweep, ch_barcodes, ch_biosample)
+    SIMPLE_DEMUX(ch_sweep, ch_barcodes)
 
     // Step 4: FastQC per individual FASTQ - names are now globally unique
     ch_fq_flat = SIMPLE_DEMUX.out.fastqs
