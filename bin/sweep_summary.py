@@ -93,10 +93,13 @@ def parse_biosample(csv_path):
             if not line.strip() or line.startswith('SampleName'):
                 continue
             parts = [p.strip() for p in line.strip().split(',')]
+            if len(parts) < 2:
+                continue
+            bc = parts[1].split('--')[-1]   # 'RACE_TSO_5p--bc1001' -> 'bc1001'
             if len(parts) >= 3 and parts[2]:
-                mapping[(parts[2], parts[1])] = parts[0]
-            elif len(parts) >= 2:
-                mapping[parts[1]] = parts[0]
+                mapping[(parts[2], bc)] = parts[0]
+            else:
+                mapping[bc] = parts[0]
     return mapping
 
 

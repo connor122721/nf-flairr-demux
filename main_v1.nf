@@ -6,6 +6,7 @@ nextflow.enable.dsl = 2
 // ============================================================================
 // Input, either:
 //   --samplesheet sheet.csv   CSV with columns bam,sample_name,sample_barcode
+//                             (sample_barcode: bc1001 or RACE_TSO_5p--bc1001)
 //                             (extra columns are ignored). Each BAM gets its own
 //                             barcode->sample map, so barcodes can be reused
 //                             across BAMs.
@@ -285,6 +286,8 @@ workflow {
             }
         }
         rows = rows.findAll { it.bam }
+        // Accept 'RACE_TSO_5p--bc1001' (lima-style) or 'bc1001'; the demux matches on 'bc1001'
+        rows.each { r -> r.sample_barcode = r.sample_barcode.tokenize('-').last() }
 
         def bs_dir = file("${workflow.workDir}/biosample_sheets")
         bs_dir.mkdirs()

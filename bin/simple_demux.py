@@ -27,15 +27,19 @@ def parse_fasta(fasta_path):
             barcodes[entry.name] = entry.sequence.upper()
     return barcodes
 
+def barcode_key(name):
+    """'RACE_TSO_5p--bc1001' (lima-style pair) or 'bc1001' -> 'bc1001'."""
+    return name.strip().split('--')[-1]
+
 def parse_biosample(csv_path):
     mapping = {}
     with open(csv_path, 'r') as f:
         for line in f:
             if line.startswith("SampleName") or not line.strip():
                 continue
-            parts = line.strip().split(',')
+            parts = [p.strip() for p in line.strip().split(',')]
             if len(parts) >= 2:
-                mapping[parts[1]] = parts[0]
+                mapping[barcode_key(parts[1])] = parts[0]
     return mapping
 
 def score_read_scan(target_seq, bc_refs, scan_end=1):
@@ -271,6 +275,11 @@ def run_demux(args):
     tso_seq = {tso_name: bc_all[tso_name]}
     print(tso_seq)
     sample_bcs = {k: v for k, v in bc_all.items() if tso_name not in k}
+    missing = sorted(set(sample_map) - set(sample_bcs))
+    if missing:
+        print(f"WARNING: barcodes in --biosample not found in --barcodes FASTA: {missing}")
+        print(f"         FASTA barcode names: {sorted(sample_bcs)}")
+    print(f"Biosample map: {sample_map}")
 
     prefix = args.prefix
     suffix = args.suffix
