@@ -64,13 +64,13 @@ def is_umi_valid(seq, umi):
     return True
 
 
-def process_read_chunk(chunk, tso_seq, sample_bcs, mismatches, max_bc_dist, no_trim):
+def process_read_chunk(chunk, tso_seq, sample_bcs, mismatches, max_bc_dist, no_trim, tso_window=1, bc_window=1):
     results = []
     tso_len = len(list(tso_seq.values())[0])
     for zmw, seq, qual in chunk:
-        fwd_name, fwd_dist, fwd_pos = score_read_scan(seq, tso_seq)
+        fwd_name, fwd_dist, fwd_pos = score_read_scan(seq, tso_seq, tso_window)
         rev_seq = reverse_complement(seq)
-        rev_name, rev_dist, rev_pos = score_read_scan(rev_seq, tso_seq)
+        rev_name, rev_dist, rev_pos = score_read_scan(rev_seq, tso_seq, tso_window)
 
         orientation, working_seq = "UNKNOWN", None
         final_seq, final_qual = seq, qual
@@ -85,7 +85,7 @@ def process_read_chunk(chunk, tso_seq, sample_bcs, mismatches, max_bc_dist, no_t
         bc_name, bc_dist, bc_pos = "N/A", 99, -1
         if working_seq:
             bc_search_seq = reverse_complement(working_seq)
-            bc_name, bc_dist, bc_pos = score_read_scan(bc_search_seq, sample_bcs)
+            bc_name, bc_dist, bc_pos = score_read_scan(bc_search_seq, sample_bcs, bc_window)
 
         umi = working_seq[tso_pos + tso_len:tso_pos + tso_len + len(UMI_PATTERN)] if tso_pos >= 0 else ""
 
@@ -313,7 +313,9 @@ def run_demux(args):
             sample_bcs=sample_bcs, 
             mismatches=args.mismatches, 
             max_bc_dist=args.max_bc_dist,
-            no_trim=args.no_trim
+            no_trim=args.no_trim,
+            tso_window=args.tso_window,
+            bc_window=args.bc_window
         )
         
         with mp.Pool(processes=args.cpus) as pool:
@@ -414,6 +416,10 @@ if __name__ == "__main__":
     parser.add_argument("--prefix", type=str, default="")
     parser.add_argument("--suffix", type=str, default="")
     parser.add_argument("--no-trim", action="store_true", help="Disable trimming of TSO and barcode sequences from accepted reads")
+    parser.add_argument("--tso-window", type=int, default=1,
+                        help="Search for the TSO in the first N bases of each read (1 = position 0 only)")
+    parser.add_argument("--bc-window", type=int, default=1,
+                        help="Search for the barcode in the last N bases of each read (1 = read end only)")
     parser.add_argument("--cpus", type=int, default=mp.cpu_count())
     parser.add_argument("--chunk-size", type=int, default=5000)
     run_demux(parser.parse_args())

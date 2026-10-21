@@ -29,6 +29,12 @@ params.chunk_size = 5000
 
 // Parameter sweep ranges
 params.mismatches_range  = '0'
+
+// How far into each read to look for the TSO (from the start) and the
+// barcode (from the end). 1 = exact position only (original behaviour).
+// Raise these if reads have extra bases before the TSO, e.g. leftover adapter.
+params.tso_window = 1
+params.bc_window  = 1
 params.max_bc_dist_range = '0,1,2,3,5'
 
 // Consolidated container: built from containers/demux_py.def via
@@ -117,6 +123,8 @@ process SIMPLE_DEMUX {
         --biosample ${biosample} \\
         --mismatches ${mismatches} \\
         --max-bc-dist ${max_bc_dist} \\
+        --tso-window ${params.tso_window} \\
+        --bc-window ${params.bc_window} \\
         --cpus ${task.cpus} \\
         --chunk-size ${params.chunk_size} \\
         --suffix '${unique_suffix}' \\
