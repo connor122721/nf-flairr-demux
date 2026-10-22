@@ -64,7 +64,7 @@ def is_umi_valid(seq, umi):
     return True
 
 
-def process_read_chunk(chunk, tso_seq, sample_bcs, mismatches, max_bc_dist, no_trim, tso_window=1, bc_window=1):
+def process_read_chunk(chunk, tso_seq, sample_bcs, mismatches, max_bc_dist, no_trim, tso_window=1, bc_window=1, bc_trim_len=0):
     results = []
     tso_len = len(list(tso_seq.values())[0])
     for zmw, seq, qual in chunk:
@@ -105,6 +105,10 @@ def process_read_chunk(chunk, tso_seq, sample_bcs, mismatches, max_bc_dist, no_t
             decision = "ACCEPTED"
             if not no_trim:
                 bc_len = len(sample_bcs[bc_name])
+                # bc_trim_len > 0: cut only the outer N bases of the matched entry
+                # (e.g. the 10-bp sample barcode) and keep the constant-region primer
+                if 0 < bc_trim_len < bc_len:
+                    bc_len = bc_trim_len
                 trim_start = tso_pos + tso_len
                 trim_end = len(final_seq) - bc_pos - bc_len
                 if trim_start < trim_end:
@@ -315,7 +319,8 @@ def run_demux(args):
             max_bc_dist=args.max_bc_dist,
             no_trim=args.no_trim,
             tso_window=args.tso_window,
-            bc_window=args.bc_window
+            bc_window=args.bc_window,
+            bc_trim_len=args.bc_trim_len
         )
         
         with mp.Pool(processes=args.cpus) as pool:
@@ -418,6 +423,10 @@ if __name__ == "__main__":
     parser.add_argument("--no-trim", action="store_true", help="Disable trimming of TSO and barcode sequences from accepted reads")
     parser.add_argument("--tso-window", type=int, default=1,
                         help="Search for the TSO in the first N bases of each read (1 = position 0 only)")
+    parser.add_argument("--bc-trim-len", type=int, default=0,
+                        help="Trim only this many bases of the matched barcode entry from the read end "
+                             "(e.g. 10 = sample barcode only, keeping a barcode+primer entry's primer). "
+                             "0 = trim the whole entry")
     parser.add_argument("--bc-window", type=int, default=1,
                         help="Search for the barcode in the last N bases of each read (1 = read end only)")
     parser.add_argument("--cpus", type=int, default=mp.cpu_count())

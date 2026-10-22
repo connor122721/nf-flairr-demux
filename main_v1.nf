@@ -35,6 +35,11 @@ params.mismatches_range  = '0'
 // Raise these if reads have extra bases before the TSO, e.g. leftover adapter.
 params.tso_window = 1
 params.bc_window  = 1
+
+// Barcode FASTA entries can be sample barcode + constant-region primer
+// (e.g. bc1001_TRA). bc_trim_len = N trims only the outer N bases (the sample
+// barcode) so the primer stays in the read; 0 trims the whole entry.
+params.bc_trim_len = 0
 params.max_bc_dist_range = '0,1,2,3,5'
 
 // Consolidated container: built from containers/demux_py.def via
@@ -125,6 +130,7 @@ process SIMPLE_DEMUX {
         --max-bc-dist ${max_bc_dist} \\
         --tso-window ${params.tso_window} \\
         --bc-window ${params.bc_window} \\
+        --bc-trim-len ${params.bc_trim_len} \\
         --cpus ${task.cpus} \\
         --chunk-size ${params.chunk_size} \\
         --suffix '${unique_suffix}' \\
