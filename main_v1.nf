@@ -374,13 +374,15 @@ workflow {
     // Step 3: Demux for each parameter combo (also produces read length reports)
     SIMPLE_DEMUX(ch_sweep, ch_barcodes)
 
-    // Step 4: FastQC per individual FASTQ - names are now globally unique
+    // Step 4: FastQC per demuxed sample FASTQ (names are globally unique).
+    // The unassigned_* FASTQs are skipped: they are large and only hold rejected reads.
     ch_fq_flat = SIMPLE_DEMUX.out.fastqs
         .flatMap { mm, bcd, fqs ->
             fqs instanceof List
                 ? fqs.collect { fq -> tuple(mm, bcd, fq) }
                 : [ tuple(mm, bcd, fqs) ]
         }
+        .filter { mm, bcd, fq -> !fq.name.startsWith('unassigned_') }
     FASTQC(ch_fq_flat)
 
     // Step 5: MultiQC per parameter combo

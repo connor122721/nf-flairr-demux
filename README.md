@@ -278,7 +278,7 @@ with an error otherwise. Rename or symlink files that break either rule.
 demux_results/
 ├── skera/                                    deconcatenated BAMs (Kinnex BAM input only)
 ├── demux/mm<X>_bc<Y>/<id>/                   <SampleName>_<id>_mm<X>_bc<Y>.fastq.gz  + audit / read-length files
-├── fastqc/  multiqc/mm<X>_bc<Y>/             read QC per setting
+├── fastqc/  multiqc/mm<X>_bc<Y>/             read QC per setting (sample FASTQs; unassigned_* skipped)
 ├── sweep_summary/sweep_summary.html          assigned reads per sample for every setting  ← start here
 ├── filtered_demux/mm<X>_bc<Y>/output/        <id>__<SampleName>_mm<X>_bc<Y>.fastq.gz  (shared UMIs removed)
 └── reports/                                  Nextflow execution report + timeline
