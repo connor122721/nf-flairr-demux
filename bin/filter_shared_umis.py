@@ -27,9 +27,13 @@ def main():
         seq = rec['umi_combo']
         filter_log[seq] = 0
 
-    for h in shared_recs[0].keys():
-        if 'count_' in h:
-            sample_names.append(h.replace('count_', ''))
+    # read sample names from the header, so a run with no shared UMIs (header only)
+    # still copies every sample through unchanged
+    with open(args.barcode_sharing_summary) as fh:
+        header = fh.readline().strip().split(',')
+    for h in header:
+        if h.startswith('count_'):
+            sample_names.append(h.replace('count_', '', 1))
 
     print('Samples:', sample_names)
 

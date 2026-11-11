@@ -1,0 +1,7 @@
+SampleName,BarcodeName,locus,fastq
+PT01_D0_TRA,bc1001,TRA,/path/to/core_delivery/hifi_reads/RUN01.RACE_TSO_5p--bc1001_TRA.fastq
+PT01_D0_TRBC1,bc1001,TRBC1,/path/to/core_delivery/hifi_reads/RUN01.RACE_TSO_5p--bc1001_TRBC1.fastq
+PT01_D0_TRBC2,bc1001,TRBC2,/path/to/core_delivery/hifi_reads/RUN01.RACE_TSO_5p--bc1001_TRBC2.fastq
+PT01_D14_TRA,bc1002,TRA,/path/to/core_delivery/hifi_reads/RUN01.RACE_TSO_5p--bc1002_TRA.fastq
+PT02_D0_TRBC2,bc1001,TRBC2,/path/to/RUN02/m00000_260101_000000_s2.hifi_reads.bam
+PT02_D14_TRBC2,bc1002,TRBC2,/path/to/RUN02/m00000_260101_000000_s2.hifi_reads.bam

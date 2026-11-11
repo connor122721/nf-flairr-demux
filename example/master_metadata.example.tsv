@@ -1,0 +1,4 @@
+run_id	sample_name	patient	timepoint	locus	primer_barcode	sequenced	fastq_path	notes
+RUN01	PT01_D0_TRA	PT01	D0	TRA	bc1001	yes	/path/to/core_delivery/hifi_reads/RUN01.RACE_TSO_5p--bc1001_TRA.fastq	
+RUN01	PT01_D14_TRA	PT01	D14	TRA	bc1002	yes	/path/to/core_delivery/hifi_reads/RUN01.RACE_TSO_5p--bc1002_TRA.fastq	
+RUN01	PT01_D28_TRA	PT01	D28	TRA	bc1003	no	/path/to/core_delivery/hifi_reads/RUN01.RACE_TSO_5p--bc1003_TRA.fastq	no product; skipped

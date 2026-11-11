@@ -4,11 +4,16 @@ nextflow.enable.dsl = 2
 // ============================================================================
 // nf-flairr-demux: Kinnex FLAIRR-seq parameter sweep
 // ============================================================================
-params.input_bams = null      // raw Kinnex HiFi BAM(s) or a folder of them -> skera -> demux
-params.input_fastqs = null    // OR deconcatenated FASTQ(s) or a folder of them -> demux (skera skipped)
-params.mas_primers = null
-params.barcodes = null
-params.biosample = null
+// Input: give ONE of --samplesheet, --input_bams or --input_fastqs
+params.samplesheet  = null    // CSV/TSV, one row per sample: sample name, barcode, FASTQ or BAM path
+params.input_bams   = null    // HiFi BAM(s) or a folder of them (+ --biosample)
+params.input_fastqs = null    // FASTQ(s) or a folder of them (+ --biosample)
+params.biosample    = null    // SampleName,BarcodeName CSV (not needed with --samplesheet)
+params.kinnex       = true    // BAMs are Kinnex arrays: run skera first. false = demux BAMs as they are
+params.mas_primers  = null    // Kinnex MAS adapters for skera (only for BAMs with --kinnex true)
+params.barcodes     = null
+params.tso_window   = 1       // positions from the read start searched for the TSO (1 = position 0 only)
+params.bc_window    = 1       // positions from the read end searched for the sample barcode
 params.outdir = 'results'
 params.no_trim = false
 params.cpus = 12
@@ -33,11 +38,12 @@ params.filter_multiple_thresh = 10
 // ============================================================================
 // Validate
 // ============================================================================
-if (!params.input_bams && !params.input_fastqs) { error "ERROR: give --input_bams or --input_fastqs" }
-if (params.input_bams && params.input_fastqs)   { error "ERROR: give only one of --input_bams / --input_fastqs" }
-if (params.input_bams && !params.mas_primers)   { error "ERROR: --mas_primers is required with --input_bams" }
-if (!params.barcodes)    { error "ERROR: --barcodes is required" }
-if (!params.biosample)   { error "ERROR: --biosample is required" }
+def n_inputs = [params.samplesheet, params.input_bams, params.input_fastqs].count { it }
+if (n_inputs == 0) { error "ERROR: give one of --samplesheet, --input_bams or --input_fastqs" }
+if (n_inputs > 1)  { error "ERROR: give only one of --samplesheet / --input_bams / --input_fastqs" }
+if (!params.samplesheet && !params.biosample) { error "ERROR: --biosample is required with --input_bams / --input_fastqs" }
+if (!params.barcodes) { error "ERROR: --barcodes is required" }
+def KINNEX = params.kinnex.toString().toBoolean()
 
 // ============================================================================
 // Processes
@@ -47,14 +53,14 @@ process SKERA_SPLIT {
     label 'process_medium'
     container "${params.demux_container}"
 
-    publishDir "${params.outdir}/skera", mode: 'copy'
+    publishDir "${params.outdir}/skera", mode: 'copy', pattern: '*.skera.bam*'
 
     input:
-    path bam
+    tuple val(input_id), path(bam), val(biosample_csv)
     path mas_primers
 
     output:
-    path "${bam.baseName}.skera.bam", emit: skera_bam
+    tuple val("${bam.baseName}.skera"), path("${bam.baseName}.skera.bam"), val(biosample_csv), emit: skera_bam
     path "${bam.baseName}.skera.bam.pbi", emit: skera_pbi, optional: true
 
     script:
@@ -74,9 +80,8 @@ process SIMPLE_DEMUX {
     publishDir "${params.outdir}/demux/mm${mismatches}_bc${max_bc_dist}/${input_id}", mode: 'copy'
 
     input:
-    tuple val(input_id), path(reads), val(mismatches), val(max_bc_dist)
+    tuple val(input_id), path(reads), val(biosample_csv), val(mismatches), val(max_bc_dist)
     path barcodes
-    path biosample
 
     output:
     tuple val(mismatches), val(max_bc_dist), path("*.fastq.gz"),            emit: fastqs
@@ -89,10 +94,17 @@ process SIMPLE_DEMUX {
     def trim_flag = params.no_trim ? '--no-trim' : ''
     def unique_suffix = "_${input_id}_mm${mismatches}_bc${max_bc_dist}"
     """
+    # barcode -> sample map for this input only
+    cat > biosample.csv <<'BIOSAMPLE_EOF'
+${biosample_csv.trim()}
+BIOSAMPLE_EOF
+
     python ${projectDir}/bin/simple_demux.py \\
         --input ${reads} \\
         --barcodes ${barcodes} \\
-        --biosample ${biosample} \\
+        --biosample biosample.csv \\
+        --tso-window ${params.tso_window} \\
+        --bc-window ${params.bc_window} \\
         --mismatches ${mismatches} \\
         --max-bc-dist ${max_bc_dist} \\
         --cpus ${task.cpus} \\
@@ -250,37 +262,96 @@ workflow {
     //            .filter { it.exists() }
     //            .unique()
     
-    ch_barcodes    = Channel.fromPath(params.barcodes, checkIfExists: true).first()
-    ch_biosample   = Channel.fromPath(params.biosample, checkIfExists: true).first()
+    ch_barcodes = Channel.fromPath(params.barcodes, checkIfExists: true).first()
 
-    // Step 1: demux input as (input_id, reads).
-    //   BAM mode  : skera-deconcatenate each BAM; id = "<bam>.skera"
-    //   FASTQ mode: reads are already deconcatenated; id = file name minus .fastq(.gz)/.fq(.gz)
+    // Step 1: demux inputs as (input_id, reads, biosample_csv_text).
     // The id ends up in every output name, and the shared-UMI filter splits
     // "<id>__<sample>" on '__', so ids must not contain a double underscore.
     def check_id = { String id ->
         if (id.contains('__')) error "ERROR: input name '${id}' contains '__'; rename the file (single underscores are fine)"
         id
     }
-    if (params.input_fastqs) {
-        def fq_input = params.input_fastqs
-        ch_demux_in = (file(fq_input).isDirectory()
-                ? Channel.fromPath("${fq_input}/**.{fastq,fq,fastq.gz,fq.gz}", checkIfExists: false)
-                : Channel.fromPath(fq_input, checkIfExists: true))
-            .unique()
-            .map { fq -> tuple(check_id(fq.name.replaceAll(/\.(fastq|fq)(\.gz)?$/, '')), fq) }
-    } else {
-        def bam_input = params.input_bams
-        ch_bams = file(bam_input).isDirectory()
-            ? Channel.fromPath("${bam_input}/**.bam", checkIfExists: false)
-            : Channel.fromPath(bam_input, checkIfExists: false)
-        ch_bams = ch_bams.unique()
-        ch_mas_primers = Channel.fromPath(params.mas_primers, checkIfExists: true).first()
+    def FQ_RE  = /\.(fastq|fq)(\.gz)?$/
+    def id_of  = { f -> check_id(f.name.replaceAll(FQ_RE, '').replaceAll(/\.bam$/, '')) }
+    def is_bam = { f -> f.name.endsWith('.bam') }
 
-        // Deconcatenate (once per BAM)
-        SKERA_SPLIT(ch_bams, ch_mas_primers)
-        ch_demux_in = SKERA_SPLIT.out.skera_bam.map { bam -> tuple(check_id(bam.baseName), bam) }
+    def inputs = []     // list of [id, file, biosample_csv_text]
+    if (params.samplesheet) {
+        // ---- samplesheet: one row per sample; rows that share a file are demuxed together
+        def bc_names = file(params.barcodes).readLines()
+            .findAll { it.startsWith('>') }
+            .collect { it.substring(1).trim().split(/\s+/)[0] } as Set
+        def lines  = file(params.samplesheet, checkIfExists: true).readLines()
+            .collect { it.replaceAll(/\r$/, '') }
+            .findAll { it.trim() && !it.startsWith('#') }
+        def sep    = lines[0].contains('\t') ? '\t' : ','
+        def header = lines[0].split(sep, -1).collect { it.trim() }
+        def pick   = { List names -> names.find { header.contains(it) } }
+        def c_sample = pick(['SampleName', 'sample_name', 'sample'])
+        def c_bc     = pick(['BarcodeName', 'primer_barcode', 'barcode'])
+        def c_reads  = pick(['fastq', 'fastq_path', 'reads', 'input', 'bam', 'bam_path'])
+        def c_locus  = pick(['locus'])
+        def c_keep   = pick(['sequenced', 'include'])
+        if (!c_sample || !c_bc || !c_reads)
+            error "ERROR: --samplesheet needs columns for sample (SampleName / sample_name / sample), " +
+                  "barcode (BarcodeName / primer_barcode / barcode) and reads (fastq / fastq_path / bam / bam_path). Found: ${header}"
+        log.info "Samplesheet columns: sample=${c_sample}, barcode=${c_bc}, reads=${c_reads}" +
+                 (c_locus ? ", locus=${c_locus}" : "") + (c_keep ? ", keep=${c_keep}" : "")
+
+        def rows = lines.drop(1).collect { l ->
+            def v = l.split(sep, -1).collect { it.trim() }
+            def r = [:]; header.eachWithIndex { h, i -> r[h] = i < v.size() ? v[i] : '' }; r
+        }.findAll { r -> !c_keep || !(r[c_keep].toLowerCase() in ['no', 'n', 'false', '0']) }
+        if (!rows) error "ERROR: no rows to run in ${params.samplesheet}"
+
+        // barcode name as it appears in --barcodes: "<bc>_<locus>" if present there, else "<bc>"
+        def resolve_bc = { r ->
+            def bc = r[c_bc]; def loc = c_locus ? r[c_locus] : ''
+            def cands = (loc ? ["${bc}_${loc}".toString()] : []) + [bc]
+            def hit = cands.find { bc_names.contains(it) }
+            if (!hit) error "ERROR: barcode ${cands.join(' / ')} (sample ${r[c_sample]}) not found in ${params.barcodes}"
+            hit
+        }
+        rows.groupBy { it[c_reads] }.each { path, rs ->
+            def f = file(path, checkIfExists: true)
+            def map = rs.collect { r -> [r[c_sample], resolve_bc(r)] }
+            def dup = map.groupBy { it[1] }.findAll { bc, ms -> ms*.getAt(0).unique().size() > 1 }
+            if (dup) error "ERROR: ${f.name}: one barcode is listed for several samples: ${dup.keySet()}"
+            inputs << [id_of(f), f, "SampleName,BarcodeName\n" + map.collect { "${it[0]},${it[1]}" }.join('\n')]
+        }
+        log.info "Samplesheet: ${rows.size()} samples in ${inputs.size()} input file(s)"
+    } else {
+        // ---- folder / glob inputs, one barcode map for all of them (--biosample)
+        def bios_text = file(params.biosample, checkIfExists: true).text
+        def src  = params.input_fastqs ?: params.input_bams
+        def glob = params.input_fastqs ? '**.{fastq,fq,fastq.gz,fq.gz}' : '**.bam'
+        def files = file(src).isDirectory() ? files("${src}/${glob}") : files(src)
+        files.unique().each { f -> inputs << [id_of(f), f, bios_text] }
     }
+    if (!inputs) error "ERROR: no input files found"
+    def ids = inputs.collect { it[0] }
+    def clash = ids.findAll { id -> ids.count(id) > 1 }.unique()
+    if (clash) error "ERROR: input files share a name (${clash.join(', ')}); rename them so each is unique"
+
+    // Kinnex BAMs are deconcatenated with skera first; FASTQs (and BAMs with --kinnex false) go straight in
+    def to_skera = KINNEX ? inputs.findAll { is_bam(it[1]) } : []
+    def direct   = inputs - to_skera
+    if (to_skera && !params.mas_primers) error "ERROR: --mas_primers is required for Kinnex BAMs (or pass --kinnex false)"
+
+    ch_direct = Channel.fromList(direct.collect { tuple(it[0], it[1], it[2]) })
+    if (to_skera) {
+        ch_mas_primers = Channel.fromPath(params.mas_primers, checkIfExists: true).first()
+        SKERA_SPLIT(Channel.fromList(to_skera.collect { tuple(it[0], it[1], it[2]) }), ch_mas_primers)
+        ch_demux_in = ch_direct.mix(SKERA_SPLIT.out.skera_bam.map { id, bam, bios -> tuple(check_id(id), bam, bios) })
+    } else {
+        ch_demux_in = ch_direct
+    }
+
+    // One combined (input, barcode) -> sample map for the sweep summary / UMI filter
+    ch_biosample = ch_demux_in
+        .map { id, reads, bios -> bios.readLines().drop(1).findAll { it.trim() }.collect { "${it},${id}" }.join('\n') + '\n' }
+        .collectFile(name: 'biosample_all.csv', seed: 'SampleName,BarcodeName,Input\n', sort: true)
+        .first()
 
     // Step 2: Build parameter sweep grid.
     // Dedupe at the Groovy list level so a CLI like `--max_bc_dist_range 0,0`
@@ -295,10 +366,10 @@ workflow {
     ch_sweep = ch_demux_in
         .combine(ch_mismatches)
         .combine(ch_max_bc_dist)
-        .map { id, reads, mm, bcd -> tuple(id, reads, mm, bcd) }
+        .map { id, reads, bios, mm, bcd -> tuple(id, reads, bios, mm, bcd) }
 
     // Step 3: Demux for each parameter combo (also produces read length reports)
-    SIMPLE_DEMUX(ch_sweep, ch_barcodes, ch_biosample)
+    SIMPLE_DEMUX(ch_sweep, ch_barcodes)
 
     // Step 4: FastQC per individual FASTQ - names are now globally unique
     ch_fq_flat = SIMPLE_DEMUX.out.fastqs

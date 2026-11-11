@@ -28,8 +28,8 @@ Look at what the core delivered for each SMRT cell:
 | You have | What to do |
 |---|---|
 | Per-sample, per-chain FASTQs already, e.g. `RUN01.RACE_TSO_5p--bc1001_TRA.fastq` (the core ran lima) | Skip to **[5. Run flairr-dsl2](#5-run-flairr-dsl2-with-hyperqueue--nextflow)**. |
-| One HiFi BAM per Kinnex adaptor, with **one chain per adaptor** (e.g. TRA on `bcM0001`, TRBC1 on `bcM0002`) | Run the **Nextflow pipeline** with `--input_bams` ([section 3](#3-demultiplex-samples-nextflow-pipeline)). It does skera, demux and filtering. |
-| Deconcatenated FASTQs that still hold several samples **with the TSO and sample barcodes still on the reads** (e.g. `samtools fastq` of a skera BAM, or lima run without clipping), one chain per file | Run the **Nextflow pipeline** with `--input_fastqs` ([section 3](#3-demultiplex-samples-nextflow-pipeline)). It skips skera. |
+| One HiFi BAM per Kinnex adaptor, with **one chain per adaptor** (e.g. TRA on `bcM0001`, TRBC1 on `bcM0002`) | Run the **Nextflow pipeline** ([section 3](#3-demultiplex-samples-nextflow-pipeline)). It does skera, demux and filtering. |
+| FASTQs (or already-deconcatenated BAMs) **with the TSO and sample barcodes still on the reads**, one chain per file: e.g. `samtools fastq` of a skera BAM, or core lima FASTQs that were not clipped | Run the **Nextflow pipeline** with a samplesheet ([section 3](#3-demultiplex-samples-nextflow-pipeline)). FASTQs skip skera; for BAMs pass `--kinnex false`. |
 | One HiFi BAM holding **several chains with the same sample barcodes** (e.g. TRA, TRBC1 and TRBC2 all on `bc1001`) | Split the chains with **lima** first ([section 2](#2-optional-split-pooled-chains-with-lima)), then run `simple_demux.py` per chain. |
 
 The sample demux matches reads on the sample barcode only. If two chains share a
@@ -73,8 +73,13 @@ samtools fastq movie.skera.bam | gzip > movie.skera.fastq.gz     # or: bam2fastq
 | `flairr_barcodes.fasta` | One entry named **`RACE_TSO_5p`** (the 5′ RACE template-switch oligo) plus one entry per sample barcode (`bc1001`, `bc1002`, ...). See [`example/flairr_barcodes.example.fasta`](example/flairr_barcodes.example.fasta); replace the placeholder sequences with your real ones. The TSO entry must be named exactly `RACE_TSO_5p`. |
 | `biosample.csv` | Sample barcode → sample name map (below) |
 
-### Biosample sheet
-Header `SampleName,BarcodeName`, one row per sample barcode
+### Samplesheet or biosample sheet
+The easiest input is a **samplesheet** with one row per sample that names its FASTQ or
+BAM; see [section 3](#3-demultiplex-samples-nextflow-pipeline). Each file gets its own
+barcode → sample map, so the same barcode can mean different samples in different files.
+
+The older way is a folder of inputs plus one **biosample sheet**: header
+`SampleName,BarcodeName`, one row per sample barcode
 ([`example/biosample.example.csv`](example/biosample.example.csv)):
 ```csv
 SampleName,BarcodeName
@@ -85,7 +90,7 @@ PT01_TIL,bc1004
 PT02_D0,bc1005
 PT02_D14,bc1006
 ```
-The map is **global**: the same barcode gets the same name in every input BAM. If
+That map is **global**: the same barcode gets the same name in every input file. If
 you demux several BAMs in one run and they reuse barcodes for different samples,
 use the barcode itself as the name
 ([`example/biosample.shared_barcodes.example.csv`](example/biosample.shared_barcodes.example.csv)).
@@ -143,8 +148,10 @@ Each folder gets one `<SampleName>_<CHAIN>.fastq` per sample, plus `unassigned_<
 
 ### What `simple_demux.py` checks
 For each read (either orientation):
-1. Finds the `RACE_TSO_5p` sequence within `--mismatches` errors.
-2. Finds the sample barcode at the other end within `--max-bc-dist` errors (ties → `AMBIGUOUS`).
+1. Finds the `RACE_TSO_5p` sequence within `--mismatches` errors, starting anywhere in the
+   first `--tso-window` bases of the read (default 1 = it must start at base 0).
+2. Finds the sample barcode at the other end within `--max-bc-dist` errors, within the last
+   `--bc-window` bases (default 1). Ties → `AMBIGUOUS`.
 3. Checks the UMI after the TSO matches `ATCAACGCAGAGTNNNNTNNNNTNNNNTCTTGGG`.
 4. Keeps reads 500–2,500 bp.
 5. Trims TSO and barcode from accepted reads (turn off with `--no-trim`).
@@ -158,63 +165,104 @@ Rejected reads are written to `unassigned*.fastq`, and the reason is in `audit_l
 
 The pipeline demuxes each input over a grid of TSO-mismatch × barcode-distance
 settings so you can pick the best combination. It also runs FastQC/MultiQC, a sweep
-summary, and the shared-UMI filter. Give it **either** BAMs **or** FASTQs (one chain per file):
+summary, and the shared-UMI filter.
 
-| Input | Flag | What happens |
-|---|---|---|
-| Raw Kinnex HiFi BAMs (`*.hifi_reads.bam`) | `--input_bams` + `--mas_primers` | skera → demux → filter |
-| Deconcatenated FASTQs (`.fastq`, `.fq`, `.fastq.gz`, `.fq.gz`), TSO + barcodes still on the reads | `--input_fastqs` | demux → filter (no skera) |
+### Input: a samplesheet (recommended)
+One row per sample, CSV or TSV, with a header. Columns are found by name; any other
+columns are ignored, so a full master metadata sheet works as it is.
 
-Each flag takes one file, a glob in quotes (`'/path/*.fastq.gz'`), or a folder. A folder
-means every matching file under it, at any depth. Don't give `--input_bams` BAMs that
-have already been through skera or lima: they would be deconcatenated a second time.
+| Needed | Accepted column names |
+|---|---|
+| sample name | `SampleName`, `sample_name`, `sample` |
+| sample barcode | `BarcodeName`, `primer_barcode`, `barcode` |
+| reads file (FASTQ or BAM) | `fastq`, `fastq_path`, `reads`, `input`, `bam`, `bam_path` (first one found wins) |
+| *optional* chain | `locus`, e.g. `TRA`, `TRBC1`. If the barcode FASTA names barcodes per chain (`bc1004_TRA`), the pipeline uses `<barcode>_<locus>`; otherwise plain `<barcode>`. |
+| *optional* keep / skip | `sequenced` or `include`. Rows with `no`, `n`, `false` or `0` are skipped. |
 
-**From BAMs:**
+Minimal sheet ([`example/samplesheet.example.csv`](example/samplesheet.example.csv)):
+```csv
+SampleName,BarcodeName,locus,fastq
+PT01_D0_TRA,bc1001,TRA,/path/to/core_delivery/hifi_reads/RUN01.RACE_TSO_5p--bc1001_TRA.fastq
+PT01_D0_TRBC1,bc1001,TRBC1,/path/to/core_delivery/hifi_reads/RUN01.RACE_TSO_5p--bc1001_TRBC1.fastq
+PT02_D0_TRBC2,bc1001,TRBC2,/path/to/RUN02/m00000_260101_000000_s2.hifi_reads.bam
+PT02_D14_TRBC2,bc1002,TRBC2,/path/to/RUN02/m00000_260101_000000_s2.hifi_reads.bam
+```
+A master metadata TSV works too ([`example/master_metadata.example.tsv`](example/master_metadata.example.tsv),
+using `sample_name`, `primer_barcode`, `locus`, `sequenced`, `fastq_path`).
+
+- **Rows that point to the same file are demuxed together.** In the example, PT02's two samples share one BAM.
+- **The barcode map is per file.** `bc1001` can be PT01 in one file and PT02 in another.
+- **Rows with the same barcode in the same file must be the same sample.** Otherwise the pipeline stops.
+
 ```bash
 module load nextflow
+export BASH_ENV=      # see Troubleshooting
+nextflow -bg run main_v1.nf -profile slurm,apptainer -resume \
+    --samplesheet /path/to/metadata/RUN01_samplesheet.csv \
+    --kinnex false \
+    --barcodes /path/to/barcodes/FLAIRR_bc_loci_barcodes.fasta \
+    --tso_window 40 --bc_window 40 \
+    --mismatches_range 0,2 \
+    --max_bc_dist_range 0,1,2 \
+    --outdir ./RUN01_FLAIRR
+```
+
+- **`--kinnex`:** whether BAM rows are raw Kinnex arrays.
+  - `true` (default): skera runs first, and `--mas_primers` is needed.
+  - `false`: BAMs are demuxed as they are.
+  - FASTQs never go through skera.
+- **`--tso_window` / `--bc_window`:** how far into each end of the read to look for the TSO and the barcode. The default of 1 means "must start at the first base". Raise it, e.g. to 40, if the reads carry extra bases before the TSO or after the barcode. Without that, most reads come out `TSO NOT FOUND`.
+- **`-bg`:** runs Nextflow in the background, so follow it with `tail -f .nextflow.log`. Use absolute paths in the samplesheet.
+
+### Input: folders of BAMs or FASTQs + biosample sheet
+For many files that all use the same barcode → sample map:
+
+| Input | Flags | What happens |
+|---|---|---|
+| Raw Kinnex HiFi BAMs (`*.hifi_reads.bam`) | `--input_bams` + `--mas_primers` + `--biosample` | skera → demux → filter |
+| BAMs that don't need skera | `--input_bams` + `--kinnex false` + `--biosample` | demux → filter |
+| FASTQs (`.fastq`, `.fq`, `.fastq.gz`, `.fq.gz`) | `--input_fastqs` + `--biosample` | demux → filter |
+
+Each flag takes one file, a glob in quotes (`'/path/*.fastq.gz'`), or a folder. A folder
+means every matching file under it, at any depth. Don't send BAMs that have already been
+through skera or lima back through skera (use `--kinnex false`).
+
+```bash
 nextflow run main_v1.nf -profile slurm,apptainer -resume \
     --input_bams /path/to/RUN01/hifi_bams/ \
     --mas_primers /path/to/mas_primers.fasta \
     --barcodes    /path/to/flairr_barcodes.fasta \
     --biosample   /path/to/biosample.csv \
-    --demux_container /path/to/demux_py3.sif \
     --mismatches_range 0 \
     --max_bc_dist_range 0,1,2,3 \
     --partition compute \
     --outdir /path/to/RUN01/demux_results
 ```
 
-**From FASTQs:**
-```bash
-nextflow run main_v1.nf -profile slurm,apptainer -resume \
-    --input_fastqs /path/to/RUN01/fastqs/ \
-    --barcodes    /path/to/flairr_barcodes.fasta \
-    --biosample   /path/to/biosample.csv \
-    --demux_container /path/to/demux_py3.sif \
-    --mismatches_range 0 \
-    --max_bc_dist_range 0,1,2,3 \
-    --outdir /path/to/RUN01/demux_results
-```
-
-**Input names.** Each input gets an ID that appears in every output file name:
-- BAM: `<bam name>.skera`
-- FASTQ: the file name minus `.fastq(.gz)` / `.fq(.gz)`, e.g. `RUN01_TRA.fastq.gz` → `RUN01_TRA`
+### Input names
+Each input file gets an ID that appears in every output file name:
+- BAM through skera: `<bam name>.skera`
+- BAM with `--kinnex false`: `<bam name>`
+- FASTQ: the file name minus `.fastq(.gz)` / `.fq(.gz)`, e.g. `RUN01.RACE_TSO_5p--bc1004_TRA.fastq` → `RUN01.RACE_TSO_5p--bc1004_TRA`
 
 IDs must be unique and must not contain a double underscore `__`; the pipeline stops
-with an error if one does. Name chain-specific FASTQs so the chain is visible
-(`RUN01_cell1_TRA.fastq.gz`), since it carries through to the outputs.
+with an error otherwise. Rename or symlink files that break either rule.
 
+### Parameters
 | Parameter | Default | Meaning |
 |---|---|---|
-| `--input_bams` | – | raw HiFi BAM(s) or folder (use this **or** `--input_fastqs`) |
-| `--input_fastqs` | – | deconcatenated FASTQ(s) or folder (use this **or** `--input_bams`) |
-| `--mas_primers` | – | Kinnex MAS adapters for skera (BAM input only) |
+| `--samplesheet` | – | per-sample CSV/TSV (use this **or** `--input_bams` / `--input_fastqs`) |
+| `--input_bams` | – | HiFi BAM(s) or folder (+ `--biosample`) |
+| `--input_fastqs` | – | FASTQ(s) or folder (+ `--biosample`) |
+| `--biosample` | – | `SampleName,BarcodeName` CSV (not used with `--samplesheet`) |
+| `--kinnex` | `true` | run skera on BAM inputs first |
+| `--mas_primers` | – | Kinnex MAS adapters for skera (BAMs with `--kinnex true`) |
 | `--barcodes` | – | FASTA with `RACE_TSO_5p` + sample barcodes |
-| `--biosample` | – | `SampleName,BarcodeName` CSV |
-| `--demux_container` | personal path | demux container (`demux_py3.sif`) |
-| `--outdir` | `results` | output folder |
+| `--tso_window`, `--bc_window` | `1`, `1` | bases from each read end searched for the TSO / barcode |
 | `--mismatches_range` | `0` | TSO mismatches to try (comma list) |
 | `--max_bc_dist_range` | `0,1,2,3,5` | sample-barcode errors to try (comma list) |
+| `--demux_container` | personal path | demux container (`demux_py3.sif`) |
+| `--outdir` | `results` | output folder |
 | `--no_trim` | `false` | keep TSO / barcode on reads |
 | `--run_filter_shared_umis` | `true` | run the shared-UMI filter |
 | `--filter_next_max_thresh` | `1` | keep a shared UMI in its top sample if the runner-up has ≤ this many reads |
@@ -225,7 +273,7 @@ with an error if one does. Name chain-specific FASTQs so the chain is visible
 ### Outputs
 ```
 demux_results/
-├── skera/                                    deconcatenated BAMs (BAM input only)
+├── skera/                                    deconcatenated BAMs (Kinnex BAM input only)
 ├── demux/mm<X>_bc<Y>/<id>/                   <SampleName>_<id>_mm<X>_bc<Y>.fastq.gz  + audit / read-length files
 ├── fastqc/  multiqc/mm<X>_bc<Y>/             read QC per setting
 ├── sweep_summary/sweep_summary.html          assigned reads per sample for every setting  ← start here
@@ -334,8 +382,11 @@ flairr_results/
 | `.hqs` log files look like binary | HQ stream format | `hq job cat <id> stderr` (or `stdout`) |
 | Few reads assigned in the demux | Wrong `RACE_TSO_5p` / barcode sequences, or settings too strict | Check `audit_log.csv` decisions and `sweep_summary.html`; try a higher `--max_bc_dist_range` |
 | FASTQ input: nearly all reads `REJECTED - TSO NOT FOUND` | The FASTQ was trimmed by lima (already demultiplexed) | Don't re-demux it; use it directly in flairr-dsl2 |
-| `input name '...' contains '__'` | An input file name has a double underscore | Rename the file (single underscores are fine) |
-| `give --input_bams or --input_fastqs` / `give only one of ...` | No input, or both kinds at once | Pass exactly one of the two |
+| `input name '...' contains '__'` / `input files share a name` | An input file name has a double underscore, or two inputs have the same name | Rename or symlink the files |
+| `give one of --samplesheet, --input_bams or --input_fastqs` / `give only one of ...` | No input, or more than one kind | Pass exactly one |
+| `--samplesheet needs columns for ...` | Header names not recognised | Rename columns to one of the accepted names (section 3) |
+| `barcode ... not found in <barcodes>` | Samplesheet barcode (or `<barcode>_<locus>`) isn't a FASTA header | Match names to the barcode FASTA, or add / fix the `locus` column |
+| Most reads `TSO NOT FOUND` though the TSO is in the reads | TSO doesn't start at base 0 | Raise `--tso_window` (and `--bc_window`) |
 | Same barcode used by different samples in one run | Biosample map is global | Use barcode names in `biosample.csv` and rename in the flairr-dsl2 sheet |
 | Chains mixed in one sample's FASTQ | Chains pooled under the same barcodes without lima | Split chains with lima first (section 2) |
 | Bad paths / trailing `\r` in sample names | Sheet edited on Windows | `sed -i 's/\r$//' sheet.tsv` |

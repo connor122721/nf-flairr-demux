@@ -79,7 +79,10 @@ def extract_audit_params(filename):
 
 
 def parse_biosample(csv_path):
-    """Map barcode name -> sample name from biosample CSV (SampleName,BarcodeName)."""
+    """Map barcode -> sample name from a biosample CSV (SampleName,BarcodeName[,Input]).
+
+    With a third Input column the key is (input_id, barcode), so the same barcode
+    can name different samples in different input files."""
     mapping = {}
     if not csv_path or not os.path.exists(csv_path):
         return mapping
@@ -88,7 +91,9 @@ def parse_biosample(csv_path):
             if not line.strip() or line.startswith('SampleName'):
                 continue
             parts = line.strip().split(',')
-            if len(parts) >= 2:
+            if len(parts) >= 3 and parts[2]:
+                mapping[(parts[2], parts[1])] = parts[0]
+            elif len(parts) >= 2:
                 mapping[parts[1]] = parts[0]
     return mapping
 
@@ -134,7 +139,7 @@ def compute_umi_sharing(audit_files_by_combo, sample_map, output_prefix,
             fname = os.path.basename(fp)
             _, _, bam_name = extract_audit_params(fname)
             for umi, bc in parse_audit_log_for_umi(fp):
-                mapped = sample_map.get(bc, bc)
+                mapped = sample_map.get((bam_name, bc), sample_map.get(bc, bc))
                 # <bam>__<biosample>: BAM names contain single underscores but
                 # not double underscores, so this is splittable by FILTER_SHARED_UMIS.
                 sample = f"{bam_name}__{mapped}"
