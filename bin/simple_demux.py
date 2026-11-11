@@ -1,6 +1,7 @@
 import pysam
 import argparse
 import os
+import re
 import json
 import statistics
 import time
@@ -19,6 +20,26 @@ def reverse_complement(seq):
 
 def hamming_distance(s1, s2):
     return sum(el1 != el2 for el1, el2 in zip(s1, s2))
+
+FASTQ_RE = re.compile(r"\.(fastq|fq)(\.gz)?$", re.IGNORECASE)
+
+def is_fastq(path):
+    """True for .fastq / .fq, optionally gzipped; everything else is read as BAM."""
+    return bool(FASTQ_RE.search(path))
+
+def iter_reads(path):
+    """Yield (name, sequence, phred+33 quality string) from a BAM or a FASTQ."""
+    if is_fastq(path):
+        with pysam.FastxFile(path) as fh:
+            for entry in fh:
+                if entry.sequence and entry.quality:
+                    yield entry.name, entry.sequence, entry.quality
+    else:
+        with pysam.AlignmentFile(path, "rb", check_sq=False) as reader:
+            for r in reader.fetch(until_eof=True):
+                if r.query_sequence is not None and r.query_qualities is not None:
+                    yield (r.query_name, r.query_sequence,
+                           "".join([chr(q + 33) for q in r.query_qualities]))
 
 def parse_fasta(fasta_path):
     barcodes = {}
@@ -283,20 +304,19 @@ def run_demux(args):
     # Track read lengths per sample for inline distribution report
     read_lengths = defaultdict(list)
     
-    with pysam.AlignmentFile(args.input, "rb", check_sq=False) as reader, \
-         open(f"{prefix}audit_log.csv", "w") as log_file, \
+    print(f"Input: {args.input} ({'FASTQ' if is_fastq(args.input) else 'BAM'})")
+    with open(f"{prefix}audit_log.csv", "w") as log_file, \
          open(f"{prefix}unassigned{suffix}.fastq", "w") as unassigned_fq:
         
         log_file.write("ZMW,umi,Orientation,Read_Length,TSO_Dist,TSO_Pos,BC_Match,BC_Dist,BC_Pos,Decision\n")
         
         def read_chunker():
-            fetch_iter = reader.fetch(until_eof=True)
+            read_iter = iter_reads(args.input)
             while True:
-                chunk = list(islice(fetch_iter, args.chunk_size))
+                chunk = list(islice(read_iter, args.chunk_size))
                 if not chunk:
                     break
-                yield [(r.query_name, r.query_sequence, "".join([chr(q + 33) for q in r.query_qualities]))
-                       for r in chunk if r.query_sequence is not None and r.query_qualities is not None]
+                yield chunk
 
         worker_func = partial(
             process_read_chunk, 
@@ -397,7 +417,8 @@ def run_demux(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--input", required=True)
+    parser.add_argument("--input", required=True,
+                        help="Unaligned BAM, or FASTQ (.fastq/.fq, optionally .gz). Reads must still carry the TSO and sample barcode.")
     parser.add_argument("--barcodes", required=True)
     parser.add_argument("--biosample", required=True)
     parser.add_argument("--mismatches", type=int, default=3)

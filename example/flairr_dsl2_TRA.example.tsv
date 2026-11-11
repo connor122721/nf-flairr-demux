@@ -1,0 +1,4 @@
+PT01_D0_TRA	/path/to/demux/results/filtered_demux/mm0_bc1/output/m00000_260101_000000_s1.hifi_reads.bcM0001.skera__PT01_D0_mm0_bc1.fastq.gz
+PT01_D14_TRA	/path/to/demux/results/filtered_demux/mm0_bc1/output/m00000_260101_000000_s1.hifi_reads.bcM0001.skera__PT01_D14_mm0_bc1.fastq.gz
+PT01_D28_TRA	/path/to/demux/results/filtered_demux/mm0_bc1/output/m00000_260101_000000_s1.hifi_reads.bcM0001.skera__PT01_D28_mm0_bc1.fastq.gz
+PT01_TIL_TRA	/path/to/demux/results/filtered_demux/mm0_bc1/output/m00000_260101_000000_s1.hifi_reads.bcM0001.skera__PT01_TIL_mm0_bc1.fastq.gz

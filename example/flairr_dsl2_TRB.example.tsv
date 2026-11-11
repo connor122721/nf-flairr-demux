@@ -1,0 +1,4 @@
+PT01_D0_TRBC1	/path/to/core_delivery/hifi_reads/RUN01.RACE_TSO_5p--bc1001_TRBC1.fastq
+PT01_D0_TRBC2	/path/to/core_delivery/hifi_reads/RUN01.RACE_TSO_5p--bc1001_TRBC2.fastq
+PT01_D14_TRBC1	/path/to/core_delivery/hifi_reads/RUN01.RACE_TSO_5p--bc1002_TRBC1.fastq
+PT01_D14_TRBC2	/path/to/core_delivery/hifi_reads/RUN01.RACE_TSO_5p--bc1002_TRBC2.fastq

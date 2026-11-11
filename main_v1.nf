@@ -4,7 +4,8 @@ nextflow.enable.dsl = 2
 // ============================================================================
 // nf-flairr-demux: Kinnex FLAIRR-seq parameter sweep
 // ============================================================================
-params.input_bams = null
+params.input_bams = null      // raw Kinnex HiFi BAM(s) or a folder of them -> skera -> demux
+params.input_fastqs = null    // OR deconcatenated FASTQ(s) or a folder of them -> demux (skera skipped)
 params.mas_primers = null
 params.barcodes = null
 params.biosample = null
@@ -32,8 +33,9 @@ params.filter_multiple_thresh = 10
 // ============================================================================
 // Validate
 // ============================================================================
-if (!params.input_bams)  { error "ERROR: --input_bams is required" }
-if (!params.mas_primers) { error "ERROR: --mas_primers is required" }
+if (!params.input_bams && !params.input_fastqs) { error "ERROR: give --input_bams or --input_fastqs" }
+if (params.input_bams && params.input_fastqs)   { error "ERROR: give only one of --input_bams / --input_fastqs" }
+if (params.input_bams && !params.mas_primers)   { error "ERROR: --mas_primers is required with --input_bams" }
 if (!params.barcodes)    { error "ERROR: --barcodes is required" }
 if (!params.biosample)   { error "ERROR: --biosample is required" }
 
@@ -65,14 +67,14 @@ process SKERA_SPLIT {
 }
 
 process SIMPLE_DEMUX {
-    tag "${skera_bam.baseName}_mm${mismatches}_bc${max_bc_dist}"
+    tag "${input_id}_mm${mismatches}_bc${max_bc_dist}"
     label 'process_medium'
     container "${params.demux_container}"
 
-    publishDir "${params.outdir}/demux/mm${mismatches}_bc${max_bc_dist}/${skera_bam.baseName}", mode: 'copy'
+    publishDir "${params.outdir}/demux/mm${mismatches}_bc${max_bc_dist}/${input_id}", mode: 'copy'
 
     input:
-    tuple path(skera_bam), val(mismatches), val(max_bc_dist)
+    tuple val(input_id), path(reads), val(mismatches), val(max_bc_dist)
     path barcodes
     path biosample
 
@@ -85,11 +87,10 @@ process SIMPLE_DEMUX {
 
     script:
     def trim_flag = params.no_trim ? '--no-trim' : ''
-    def sample_id = skera_bam.baseName
-    def unique_suffix = "_${sample_id}_mm${mismatches}_bc${max_bc_dist}"
+    def unique_suffix = "_${input_id}_mm${mismatches}_bc${max_bc_dist}"
     """
     python ${projectDir}/bin/simple_demux.py \\
-        --input ${skera_bam} \\
+        --input ${reads} \\
         --barcodes ${barcodes} \\
         --biosample ${biosample} \\
         --mismatches ${mismatches} \\
@@ -104,8 +105,9 @@ process SIMPLE_DEMUX {
     # Rename audit log with unique suffix
     mv audit_log.csv audit${unique_suffix}.csv
 
-    # Gzip all FASTQs
+    # Gzip all FASTQs written by the demux (not the staged input, when it is a FASTQ)
     for fq in *.fastq; do
+        [ "\${fq}" = "${reads}" ] && continue
         pigz -p ${task.cpus} "\${fq}" 2>/dev/null || gzip "\${fq}"
     done
     """
@@ -248,18 +250,37 @@ workflow {
     //            .filter { it.exists() }
     //            .unique()
     
-    def bam_input = params.input_bams
-    ch_bams = file(bam_input).isDirectory()
-    	? Channel.fromPath("${bam_input}/**/*.bam", checkIfExists: false)
-    	: Channel.fromPath(bam_input, checkIfExists: false)
-    ch_bams = ch_bams.unique()
-
-    ch_mas_primers = Channel.fromPath(params.mas_primers, checkIfExists: true).first()
     ch_barcodes    = Channel.fromPath(params.barcodes, checkIfExists: true).first()
     ch_biosample   = Channel.fromPath(params.biosample, checkIfExists: true).first()
 
-    // Step 1: Deconcatenate (once per BAM)
-    SKERA_SPLIT(ch_bams, ch_mas_primers)
+    // Step 1: demux input as (input_id, reads).
+    //   BAM mode  : skera-deconcatenate each BAM; id = "<bam>.skera"
+    //   FASTQ mode: reads are already deconcatenated; id = file name minus .fastq(.gz)/.fq(.gz)
+    // The id ends up in every output name, and the shared-UMI filter splits
+    // "<id>__<sample>" on '__', so ids must not contain a double underscore.
+    def check_id = { String id ->
+        if (id.contains('__')) error "ERROR: input name '${id}' contains '__'; rename the file (single underscores are fine)"
+        id
+    }
+    if (params.input_fastqs) {
+        def fq_input = params.input_fastqs
+        ch_demux_in = (file(fq_input).isDirectory()
+                ? Channel.fromPath("${fq_input}/**.{fastq,fq,fastq.gz,fq.gz}", checkIfExists: false)
+                : Channel.fromPath(fq_input, checkIfExists: true))
+            .unique()
+            .map { fq -> tuple(check_id(fq.name.replaceAll(/\.(fastq|fq)(\.gz)?$/, '')), fq) }
+    } else {
+        def bam_input = params.input_bams
+        ch_bams = file(bam_input).isDirectory()
+            ? Channel.fromPath("${bam_input}/**.bam", checkIfExists: false)
+            : Channel.fromPath(bam_input, checkIfExists: false)
+        ch_bams = ch_bams.unique()
+        ch_mas_primers = Channel.fromPath(params.mas_primers, checkIfExists: true).first()
+
+        // Deconcatenate (once per BAM)
+        SKERA_SPLIT(ch_bams, ch_mas_primers)
+        ch_demux_in = SKERA_SPLIT.out.skera_bam.map { bam -> tuple(check_id(bam.baseName), bam) }
+    }
 
     // Step 2: Build parameter sweep grid.
     // Dedupe at the Groovy list level so a CLI like `--max_bc_dist_range 0,0`
@@ -267,14 +288,14 @@ workflow {
     // cached, both branches resolve to the same SIMPLE_DEMUX work-dir, and
     // SIMPLE_DEMUX.out.audit_log then emits the same file path twice, blowing
     // up SWEEP_SUMMARY with an input-staging collision.
-    ch_mismatches  = Channel.from(params.mismatches_range .tokenize(',').collect { it.trim().toInteger() }.unique())
-    ch_max_bc_dist = Channel.from(params.max_bc_dist_range.tokenize(',').collect { it.trim().toInteger() }.unique())
+    ch_mismatches  = Channel.from(params.mismatches_range.toString().tokenize(',').collect { it.trim().toInteger() }.unique())
+    ch_max_bc_dist = Channel.from(params.max_bc_dist_range.toString().tokenize(',').collect { it.trim().toInteger() }.unique())
 
-    // Combine: every skera BAM × every (mismatches, max_bc_dist) pair
-    ch_sweep = SKERA_SPLIT.out.skera_bam
+    // Combine: every input × every (mismatches, max_bc_dist) pair
+    ch_sweep = ch_demux_in
         .combine(ch_mismatches)
         .combine(ch_max_bc_dist)
-        .map { bam, mm, bcd -> tuple(bam, mm, bcd) }
+        .map { id, reads, mm, bcd -> tuple(id, reads, mm, bcd) }
 
     // Step 3: Demux for each parameter combo (also produces read length reports)
     SIMPLE_DEMUX(ch_sweep, ch_barcodes, ch_biosample)
