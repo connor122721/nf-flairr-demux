@@ -202,6 +202,7 @@ nextflow -bg run main_v1.nf -profile slurm,apptainer -resume \
     --kinnex false \
     --barcodes /path/to/barcodes/FLAIRR_bc_loci_barcodes.fasta \
     --tso_window 40 --bc_window 40 \
+    --bc_trim_len 16 \
     --mismatches_range 0,2 \
     --max_bc_dist_range 0,1,2 \
     --outdir ./RUN01_FLAIRR
@@ -211,6 +212,7 @@ nextflow -bg run main_v1.nf -profile slurm,apptainer -resume \
   - `true` (default): skera runs first, and `--mas_primers` is needed.
   - `false`: BAMs are demuxed as they are.
   - FASTQs never go through skera.
+- **`--bc_trim_len 16`:** set this when the barcode FASTA has chain-specific entries that contain the C-region primer (`bc1004_TRA`). Otherwise the demux trims the primer along with the barcode, and flairr-dsl2 fails at primer masking.
 - **`--tso_window` / `--bc_window`:** how far into each end of the read to look for the TSO and the barcode. The default of 1 means "must start at the first base". Raise it, e.g. to 40, if the reads carry extra bases before the TSO or after the barcode. Without that, most reads come out `TSO NOT FOUND`.
 - **`-bg`:** runs Nextflow in the background, so follow it with `tail -f .nextflow.log`. Use absolute paths in the samplesheet.
 
@@ -259,6 +261,7 @@ with an error otherwise. Rename or symlink files that break either rule.
 | `--mas_primers` | – | Kinnex MAS adapters for skera (BAMs with `--kinnex true`) |
 | `--barcodes` | – | FASTA with `RACE_TSO_5p` + sample barcodes |
 | `--tso_window`, `--bc_window` | `1`, `1` | bases from each read end searched for the TSO / barcode |
+| `--bc_trim_len` | `0` | trim only this many barcode bases from the read end (`0` = the whole barcode entry). Set it to the sample-barcode length (e.g. `16`) when barcode entries also contain the C-region primer (`bc1004_TRA`-style), so flairr-dsl2 can still find the primer. |
 | `--mismatches_range` | `0` | TSO mismatches to try (comma list) |
 | `--max_bc_dist_range` | `0,1,2,3,5` | sample-barcode errors to try (comma list) |
 | `--demux_container` | personal path | demux container (`demux_py3.sif`) |
@@ -387,6 +390,7 @@ flairr_results/
 | `--samplesheet needs columns for ...` | Header names not recognised | Rename columns to one of the accepted names (section 3) |
 | `barcode ... not found in <barcodes>` | Samplesheet barcode (or `<barcode>_<locus>`) isn't a FASTA header | Match names to the barcode FASTA, or add / fix the `locus` column |
 | Most reads `TSO NOT FOUND` though the TSO is in the reads | TSO doesn't start at base 0 | Raise `--tso_window` (and `--bc_window`) |
+| flairr-dsl2 MaskPrimers: almost every read `primers-fail` (C primer not found) | Barcode entries include the C-region primer (`bc1004_TRA` = barcode + primer) and the demux trimmed the whole entry | Re-run the demux with `--bc_trim_len 16` (your sample-barcode length) |
 | Same barcode used by different samples in one run | Biosample map is global | Use barcode names in `biosample.csv` and rename in the flairr-dsl2 sheet |
 | Chains mixed in one sample's FASTQ | Chains pooled under the same barcodes without lima | Split chains with lima first (section 2) |
 | Bad paths / trailing `\r` in sample names | Sheet edited on Windows | `sed -i 's/\r$//' sheet.tsv` |

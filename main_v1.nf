@@ -14,6 +14,8 @@ params.mas_primers  = null    // Kinnex MAS adapters for skera (only for BAMs wi
 params.barcodes     = null
 params.tso_window   = 1       // positions from the read start searched for the TSO (1 = position 0 only)
 params.bc_window    = 1       // positions from the read end searched for the sample barcode
+params.bc_trim_len  = 0       // trim only this many barcode bases (0 = whole barcode entry);
+                              // e.g. 16 keeps the C-region primer of "bc1004_TRA"-style entries
 params.outdir = 'results'
 params.no_trim = false
 params.cpus = 12
@@ -105,6 +107,7 @@ BIOSAMPLE_EOF
         --biosample biosample.csv \\
         --tso-window ${params.tso_window} \\
         --bc-window ${params.bc_window} \\
+        --bc-trim-len ${params.bc_trim_len} \\
         --mismatches ${mismatches} \\
         --max-bc-dist ${max_bc_dist} \\
         --cpus ${task.cpus} \\

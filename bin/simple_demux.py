@@ -82,7 +82,7 @@ def is_umi_valid(seq, umi):
 
 
 def process_read_chunk(chunk, tso_seq, sample_bcs, mismatches, max_bc_dist, no_trim,
-                       tso_window=1, bc_window=1):
+                       tso_window=1, bc_window=1, bc_trim_len=0):
     results = []
     tso_len = len(list(tso_seq.values())[0])
     for zmw, seq, qual in chunk:
@@ -123,6 +123,10 @@ def process_read_chunk(chunk, tso_seq, sample_bcs, mismatches, max_bc_dist, no_t
             decision = "ACCEPTED"
             if not no_trim:
                 bc_len = len(sample_bcs[bc_name])
+                # bc_trim_len > 0: only cut the outer N bases (the sample barcode) and keep the
+                # rest of a longer entry, e.g. the C-region primer in "bc1004_TRA"
+                if bc_trim_len > 0:
+                    bc_len = min(bc_len, bc_trim_len)
                 trim_start = tso_pos + tso_len
                 trim_end = len(final_seq) - bc_pos - bc_len
                 if trim_start < trim_end:
@@ -296,7 +300,8 @@ def run_demux(args):
     missing = sorted(set(sample_map) - set(sample_bcs))
     if missing:
         print(f"WARNING: biosample barcodes not in {args.barcodes}: {', '.join(missing)}")
-    print(f"TSO window: {args.tso_window} | barcode window: {args.bc_window}")
+    print(f"TSO window: {args.tso_window} | barcode window: {args.bc_window} | "
+          f"barcode trim: {args.bc_trim_len if args.bc_trim_len > 0 else 'whole barcode'}")
 
     prefix = args.prefix
     suffix = args.suffix
@@ -331,7 +336,8 @@ def run_demux(args):
             max_bc_dist=args.max_bc_dist,
             no_trim=args.no_trim,
             tso_window=args.tso_window,
-            bc_window=args.bc_window
+            bc_window=args.bc_window,
+            bc_trim_len=args.bc_trim_len
         )
         
         with mp.Pool(processes=args.cpus) as pool:
@@ -437,6 +443,10 @@ if __name__ == "__main__":
     parser.add_argument("--chunk-size", type=int, default=5000)
     parser.add_argument("--tso-window", type=int, default=1,
                         help="Positions from the read start searched for the TSO (default 1 = position 0 only)")
+    parser.add_argument("--bc-trim-len", type=int, default=0,
+                        help="Trim only this many bases of the matched barcode from the read end "
+                             "(0 = the whole barcode). Use the sample-barcode length (e.g. 16) when "
+                             "barcode entries also contain a C-region primer that must stay on the read.")
     parser.add_argument("--bc-window", type=int, default=1,
                         help="Positions from the read end searched for the sample barcode (default 1)")
     run_demux(parser.parse_args())
